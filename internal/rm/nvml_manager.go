@@ -18,6 +18,7 @@ package rm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/NVIDIA/go-gpuallocator/gpuallocator"
 	"github.com/NVIDIA/go-nvlib/pkg/nvlib/device"
@@ -53,8 +54,48 @@ func NewNVMLResourceManagers(infolib info.Interface, nvmllib nvml.Interface, dev
 		return nil, fmt.Errorf("error building device map: %v", err)
 	}
 
-	var rms []ResourceManager
+	processedDeviceMap := make(DeviceMap)
 	for resourceName, devices := range deviceMap {
+		if len(devices) == 0 {
+			continue
+		}
+		// 如果 resourceName 不是 nvidia.com/gpu，就使用原来的。
+		if !strings.Contains(string(resourceName), "nvidia.com/gpu") {
+			processedDeviceMap[resourceName] = devices
+			continue
+		}
+		// 如果 resourceName 是 nvidia.com/gpu， 修改成 nvidia.com/gpu-<gpu型号>
+		// 参考自： device_map.go里的VisitDevices()。
+		err := devicelib.VisitDevices(func(i int, gpu device.Device) error {
+			name, ret := gpu.GetName()
+			if ret != nvml.SUCCESS {
+				return fmt.Errorf("error getting product name for GPU: %v", ret)
+			}
+			migEnabled, err := gpu.IsMigEnabled()
+			if err != nil {
+				return fmt.Errorf("error checking if MIG is enabled on GPU: %v", err)
+			}
+			if migEnabled && *(config.Flags.MigStrategy) != spec.MigStrategyNone {
+				return nil
+			}
+			newName := strings.ReplaceAll(name, " ", "_")
+			for _, resource := range config.Resources.GPUs {
+				if resource.Pattern.Matches(name) {
+					resName := fmt.Sprintf("%s-%s", resource.Name, newName)
+					index, gpuInfo := newNvmlGPUDevice(i, gpu)
+					return processedDeviceMap.setEntry(
+						spec.ResourceName(resName), index, gpuInfo)
+				}
+			}
+			return fmt.Errorf("GPU name '%v' does not match any resource patterns", name)
+		})
+		if err != nil {
+			klog.Errorf("Failed to group GPU by GPU type: %v", err)
+		}
+	}
+
+	var rms []ResourceManager
+	for resourceName, devices := range processedDeviceMap {
 		if len(devices) == 0 {
 			continue
 		}
