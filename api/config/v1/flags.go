@@ -66,6 +66,7 @@ type CommandLineFlags struct {
 	DeviceDiscoveryStrategy *string                 `json:"deviceDiscoveryStrategy"    yaml:"deviceDiscoveryStrategy"`
 	Plugin                  *PluginCommandLineFlags `json:"plugin,omitempty"           yaml:"plugin,omitempty"`
 	GFD                     *GFDCommandLineFlags    `json:"gfd,omitempty"              yaml:"gfd,omitempty"`
+	RenameWithProduct       bool                    `json:"renameWithProduct,omitempty" yaml:"renameWithProduct,omitempty"`
 }
 
 // PluginCommandLineFlags holds the list of command line flags specific to the device plugin.
