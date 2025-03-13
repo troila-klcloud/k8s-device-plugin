@@ -19,6 +19,8 @@ package rm
 import (
 	"fmt"
 
+	"strings"
+
 	"github.com/NVIDIA/go-nvlib/pkg/nvlib/device"
 	"github.com/NVIDIA/go-nvlib/pkg/nvlib/info"
 	"github.com/NVIDIA/go-nvml/pkg/nvml"
@@ -32,6 +34,7 @@ type deviceMapBuilder struct {
 	migStrategy         *string
 	resources           *spec.Resources
 	replicatedResources *spec.ReplicatedResources
+	renameWithProduct   bool
 
 	newGPUDevice func(i int, gpu nvml.Device) (string, deviceInfo)
 }
@@ -47,6 +50,7 @@ func NewDeviceMap(infolib info.Interface, devicelib device.Interface, config *sp
 		resources:           &config.Resources,
 		replicatedResources: config.Sharing.ReplicatedResources(),
 		newGPUDevice:        newNvmlGPUDevice,
+		renameWithProduct:   config.Flags.RenameWithProduct,
 	}
 
 	if infolib.ResolvePlatform() == info.PlatformWSL {
@@ -66,6 +70,12 @@ func (b *deviceMapBuilder) build() (DeviceMap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error updating device map with replicas from replicatedResources config: %v", err)
 	}
+
+	devices, err = b.updateDeviceMapWithProduct(devices)
+	if err != nil {
+		return nil, fmt.Errorf("error updating device map with product: %v", err)
+	}
+
 	return devices, nil
 }
 
@@ -332,5 +342,36 @@ func updateDeviceMapWithReplicas(replicatedResources *spec.ReplicatedResources, 
 		}
 	}
 
+	return devices, nil
+}
+
+func (b *deviceMapBuilder) updateDeviceMapWithProduct(oDevices DeviceMap) (DeviceMap, error) {
+	if !b.renameWithProduct {
+		return oDevices, nil
+	}
+	devices := make(DeviceMap)
+	if err := b.VisitDevices(func(i int, d device.Device) error {
+		uuid, r := d.GetUUID()
+		if r != nvml.SUCCESS {
+			return fmt.Errorf("can not get the UUID of gpu device: %s", r.Error())
+		}
+		product, r := d.GetName()
+		if r != nvml.SUCCESS {
+			return fmt.Errorf("can not get the product name of gpu device: %s", r.Error())
+		}
+		product = strings.ReplaceAll(strings.TrimPrefix(strings.ToLower(product), "nvidia "), " ", "-")
+
+		for name, oDevice := range oDevices {
+			for id, dev := range oDevice {
+				if strings.HasPrefix(id, uuid) {
+					newName := strings.Replace(string(name), "gpu", fmt.Sprintf("%s-gpu", product), 1)
+					devices.insert(spec.ResourceName(newName), dev)
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return devices, nil
 }
